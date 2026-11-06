@@ -18,10 +18,10 @@ import { PARTS, SLOTS, SLOT_NAMES } from '../avatar-parts.js';
 import { teacherGate, errMsg } from '../gate.js';
 import { parseWorksheet, renderPage, closeSims, simHref, TYPE_NAME } from '../worksheet.js';
 import { refreshMats } from './teacher-mats.js';
-import { refreshProgress } from './teacher-progress.js';
+import { refreshProgress, todayPlan } from './teacher-progress.js';
 import { refreshAi } from './teacher-ai.js';
 import { initSide, markSide, syncSideBadges } from './teacher-side.js';
-import { startHero, stopHero } from './teacher-hero.js';
+import { startHero, stopHero, showToday } from './teacher-hero.js';
 
 initUI();
 
@@ -178,8 +178,8 @@ function renderBoards() {
         ${list.map((b) => `
           <tr>
             <td style="width:64px">${clsName(b.class_id)}반</td>
-            <td>${b.status === 'revealed' ? '<span class="nd-tag green">발표함</span>' : '<span class="nd-tag yellow">진행 중</span>'}</td>
-            <td>${todayIds.has(b.id) ? '<span class="nd-tag blue">오늘</span>' : ''}</td>
+            <td>${b.status === 'revealed' ? '<span class="nd-tag green">발표함</span>' : '<span class="nd-tag line">진행 중</span>'}</td>
+            <td>${todayIds.has(b.id) ? '<span class="nd-tag gray">오늘</span>' : ''}</td>
             <td>${pages(b)}</td>
             <td class="muted">${fmtDate(b.created_at)}</td>
             <td><div class="nd-row-acts"><details class="nd-menu"><summary aria-label="${clsName(b.class_id)}반 보드 메뉴">⋯</summary><div class="nd-menu-list">
@@ -1022,6 +1022,13 @@ async function refreshPoints() {
 }
 
 $('points-form').addEventListener('input', renderPointsSum);
+// 포인트 규칙 왼쪽 목록: 누르면 그 칸으로
+$('points-form').querySelector('.pt-nav').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-pt]');
+  if (!b) return;
+  $('points-form').querySelectorAll('[data-pt]').forEach((x) => x.classList.toggle('on', x === b));
+  $(b.dataset.pt)?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+});
 $('points-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = e.currentTarget.querySelector('[type="submit"]');
@@ -1087,6 +1094,7 @@ function eventKind(e) {
   if (e.qs_game_id || (e.reason || '').startsWith('퀴즈 쇼')) return '퀴즈 쇼';
   if ((e.reason || '').startsWith('아이템:')) return '아이템 구매';
   if ((e.reason || '').startsWith('닉네임 ')) return '닉네임';
+  if (e.reason === '은화 바꾸기') return '은화 바꾸기';
   return '직접 줌';
 }
 
@@ -1258,7 +1266,7 @@ function renderLessons() {
         <div class="lesson-chips">
           ${classes.map((c) => {
             const has = !!lessonBoard(c.id, l.code);
-            return `<span class="tag ${has ? 'tag-done' : 'tag-off'}" title="${clsName(c.id)}반 ${esc(l.code)}차시 보드 ${has ? '있음' : '없음'}">${clsName(c.id)}반 ${has ? '있음' : '없음'}</span>`;
+            return `<span class="tag lc-chip ${has ? 'tag-done' : 'tag-off'}" title="${clsName(c.id)}반 ${esc(l.code)}차시 보드 ${has ? '있음' : '없음'}">${clsName(c.id)}</span>`;
           }).join('')}
         </div>
         <div class="lesson-go">
@@ -1562,6 +1570,7 @@ function loadPanel(key) {
   if (key === 'mats') refreshMats().catch(() => {});
   if (key === 'progress') refreshProgress().catch(() => {});
   if (key === 'ai') refreshAi().catch(() => {});
+  if (key === '') todayPlan().then(showToday).catch(() => {});
 }
 initSide();
 addEventListener('hashchange', route);

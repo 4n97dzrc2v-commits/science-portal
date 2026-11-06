@@ -105,6 +105,11 @@ export async function buyAvatarItem(token, itemId) {
   return unwrap(await need().rpc('buy_avatar_item', { p_token: token, p_item_id: itemId }));
 }
 
+// 금화 → 은화 바꾸기(count 묶음): { ok: true, coins, silver, gold_spent, silver_got } 또는 error = 'BAD_COUNT' | 'NO_COINS'
+export async function exchangeSilver(token, count) {
+  return unwrap(await need().rpc('exchange_silver', { p_token: token, p_count: count }));
+}
+
 // 보상 신청: { ok: true, coins, purchases } 또는 error = 'NOT_FOR_SALE' | 'BAD_PARTNER' | 'NO_COINS'
 export async function requestPurchase(token, itemId, partner = null) {
   return unwrap(await need().rpc('request_purchase', { p_token: token, p_item_id: itemId, p_partner: partner }));
@@ -503,7 +508,7 @@ export async function grantPoints(studentIds, xp, coins, reason) {
 export async function listGrants(limit = 40) {
   let q = need().from('point_events')
     .select('id, xp, coins, reason, created_at, student:students(class_id, number, nickname)')
-    .is('board_id', null).is('worksheet_board_id', null).is('ws_first_id', null).is('qb_game_id', null).is('qs_game_id', null).not('reason', 'like', '아이템:%').not('reason', 'like', '닉네임%');
+    .is('board_id', null).is('worksheet_board_id', null).is('ws_first_id', null).is('qb_game_id', null).is('qs_game_id', null).not('reason', 'like', '아이템:%').not('reason', 'like', '닉네임%').neq('reason', '은화 바꾸기');
   return unwrap(await q.order('created_at', { ascending: false }).limit(limit));
 }
 
@@ -681,7 +686,7 @@ export async function listLessons() {
 }
 
 export async function getLesson(code) {
-  return unwrap(await need().from('lessons').select('code, title, lesson_src, slide_count').eq('code', code).maybeSingle());
+  return unwrap(await need().from('lessons').select('code, title, lesson_src, slide_count, slide_titles').eq('code', code).maybeSingle());
 }
 
 // { code, title, lesson_src, sort }
@@ -1072,14 +1077,24 @@ export async function recordLessonTaught(classId, code) {
 }
 
 // 수업 모드: 보드에서 실제로 간 가장 뒤 쪽(줄지 않음)
+// 학습지 수업 따라가기: 수업 모드가 지금 보는 수업자료 쪽(학생 학습지가 이 쪽으로 넘어감)
+export async function setBoardSlideNow(boardId, slide) {
+  unwrap(await need().from('boards').update({ ws_now: slide }).eq('id', boardId));
+}
+
+// 수업 끝(수업자료 마지막 쪽·W): 학습지 모든 쪽을 열고 학생이 마음대로 넘기게
+export async function setWsFree(boardId) {
+  return unwrap(await need().rpc('set_ws_free', { p_board_id: boardId }));
+}
+
 export async function setBoardSlideMax(boardId, slide) {
   unwrap(await need().from('boards').update({ slide_max: slide }).eq('id', boardId)
     .or(`slide_max.is.null,slide_max.lt.${Number(slide)}`));
 }
 
 // 수업 모드: 수업자료 쪽 수
-export async function setLessonSlideCount(code, n) {
-  unwrap(await need().from('lessons').update({ slide_count: n }).eq('code', code));
+export async function setLessonSlideCount(code, n, titles) {
+  unwrap(await need().from('lessons').update(titles ? { slide_count: n, slide_titles: titles } : { slide_count: n }).eq('code', code));
 }
 
 // 진도 계산용 보드 (보관한 것 포함): [{ class_id, lesson_code, slide_max, status }]

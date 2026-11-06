@@ -484,20 +484,32 @@ revoke all on function public._ws_ai_kind(text, text, jsonb) from public, anon, 
 revoke all on function public._ws_ai_enqueue(text, jsonb, jsonb, jsonb, smallint) from public, anon, authenticated;
 revoke all on function public._ws_plot(jsonb, text) from public, anon, authenticated;
 
--- 학생에게 보낼 쪽 목록: 진도(p_upto)보다 뒤 쪽은 본문·칸을 빼고 {slide, locked, has_fields}만. p_upto가 null이면 그대로
+-- 학습지는 수업 날에만 (2026-11-06): 수업 모드가 그 보드를 오늘(KST) 열었는지 (boards.ws_day, watch_board가 적음)
+create or replace function public._ws_live_today(p_day date)
+returns boolean
+language sql
+stable
+set search_path = public
+as $$
+  select p_day is not null and p_day = (now() at time zone 'Asia/Seoul')::date;
+$$;
+revoke all on function public._ws_live_today(date) from public, anon, authenticated;
+
+-- 학생에게 보낼 쪽 목록: 진도(p_upto)보다 뒤 쪽은 본문·칸을 빼고 {slide, locked, has_fields}만.
+-- p_upto가 null(수업 모드를 아직 안 연 보드)이면 모든 쪽을 잠근다(2026-11-06, 예전에는 전부 열림)
 create or replace function public._ws_view(p_pages jsonb, p_upto int)
 returns jsonb
 language sql
 immutable
 set search_path = public
 as $$
-  select case when p_upto is null then p_pages else coalesce((
-    select jsonb_agg(case when coalesce((pg ->> 'slide')::int, 0) > p_upto
+  select coalesce((
+    select jsonb_agg(case when coalesce((pg ->> 'slide')::int, 0) > coalesce(p_upto, 0)
       then jsonb_build_object('slide', pg -> 'slide', 'locked', true,
                               'has_fields', jsonb_array_length(coalesce(pg -> 'fields', '[]'::jsonb)) > 0, 'fields', '[]'::jsonb)
       else pg end order by n)
     from jsonb_array_elements(coalesce(p_pages, '[]'::jsonb)) with ordinality as e(pg, n)
-  ), '[]'::jsonb) end;
+  ), '[]'::jsonb);
 $$;
 revoke all on function public._ws_view(jsonb, int) from public, anon, authenticated;
 
@@ -647,7 +659,10 @@ begin
       'pages',       w.page_count,
       'done',        v_done is not null,
       'upto',        b.ws_upto,
-      'opened',      (select coalesce(jsonb_agg(o.page order by o.page), '[]'::jsonb) from public.ws_page_open o where o.board_id = b.id and o.closed_at is null),
+      -- 수업 따라가기(2026-11-05): 수업 모드가 보고 있는 수업자료 쪽. free면 수업이 끝나 마음대로 넘김
+      'now',         b.ws_now,
+      'free',        b.ws_free,
+      'opened',      (select coalesce(jsonb_agg(o.page order by o.page), '[]'::jsonb) from public.ws_page_open o where o.board_id = b.id and o.closed_at is null and public._ws_live_today(b.ws_day)),
       'firsts',      coalesce(v_firsts, '[]'::jsonb),
       -- 모둠 학습지(2026-10-26): 켜져 있으면 {no: 그날 내 모둠(없으면 null), members: 함께 기록되는 인원}
       'group',       case when b.ws_group then jsonb_build_object(
@@ -1787,6 +1802,7 @@ begin
     'level',      v_lv,
     'coins',      public._coin_balance(v_sid),
     'silver',     public._silver_balance(v_sid),
+    'exchange',   public._exchange_rate(),
     'items',      v_items,
     'wardrobe',   v_wear,
     'rewards',    v_rew,
@@ -2030,8 +2046,11 @@ begin
     'title',       w.title,
     'version',     w.updated_at,
     'upto',        b.ws_upto,
+    'now',         b.ws_now,
+    'free',        b.ws_free,
+    'slides',      (select l.slide_titles from public.lessons l where l.code = b.lesson_code),
     'pages',       public._ws_view(w.pages, b.ws_upto),
-    'opened',      (select coalesce(jsonb_agg(o.page order by o.page), '[]'::jsonb) from public.ws_page_open o where o.board_id = b.id and o.closed_at is null),
+    'opened',      (select coalesce(jsonb_agg(o.page order by o.page), '[]'::jsonb) from public.ws_page_open o where o.board_id = b.id and o.closed_at is null and public._ws_live_today(b.ws_day)),
     'session',     case when p_token is null then null when v_sid is null then 'none' else 'ok' end,
     'mine',        case when a.board_id is null then null else jsonb_build_object(
                      'answers', a.answers,
@@ -2075,7 +2094,12 @@ begin
   if w.lesson_code is null then
     return jsonb_build_object('error', 'NO_SHEET');
   end if;
-  return jsonb_build_object('sid', v_sid, 'board_id', b.id, 'lesson_code', b.lesson_code, 'key', w.key, 'upto', b.ws_upto);
+  -- 수업 모드가 오늘 연 보드만 쓰고 낼 수 있다(지난 차시를 다른 날 이어 쓰기 막기, 2026-11-06)
+  if not public._ws_live_today(b.ws_day) then
+    return jsonb_build_object('error', 'NOT_OPEN');
+  end if;
+  -- 진도 기록이 없으면 0쪽까지(모든 쪽 잠김)
+  return jsonb_build_object('sid', v_sid, 'board_id', b.id, 'lesson_code', b.lesson_code, 'key', w.key, 'upto', coalesce(b.ws_upto, 0));
 end;
 $$;
 revoke all on function public._ws_target(text, uuid) from public, anon, authenticated;
@@ -5266,7 +5290,9 @@ begin
   if not public.is_teacher() then
     raise exception 'NOT_TEACHER';
   end if;
-  update public.boards set watch_at = case when p_on then now() else null end where id = p_board_id;
+  update public.boards set watch_at = case when p_on then now() else null end,
+    ws_day = case when p_on then (now() at time zone 'Asia/Seoul')::date else ws_day end
+  where id = p_board_id;
 end;
 $$;
 revoke all on function public.watch_board(uuid, boolean) from public;
@@ -5367,3 +5393,90 @@ end;
 $$;
 revoke all on function public.claim_first_teacher() from public, anon;
 grant execute on function public.claim_first_teacher() to authenticated;
+
+-- =========================================================
+-- 금화 → 은화 바꾸기 (2026-11-05). settings.exchange {gold 10, silver 12}: 금화 gold개마다 은화 silver개
+-- point_events에 coins = −금화, silver = +은화, 사유 '은화 바꾸기'
+-- =========================================================
+create or replace function public._exchange_rate()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'gold',   greatest(1, coalesce((select (value ->> 'gold')::int   from public.settings where key = 'exchange'), 10)),
+    'silver', greatest(1, coalesce((select (value ->> 'silver')::int from public.settings where key = 'exchange'), 12)));
+$$;
+revoke all on function public._exchange_rate() from public, anon, authenticated;
+
+-- 학생: 몇 묶음(1~100) 바꿀지. 결과 {ok, coins, silver, gold_spent, silver_got} 또는 NO_SESSION·BAD_COUNT·NO_COINS
+create or replace function public.exchange_silver(p_token text, p_count int)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_sid  uuid;
+  v_rate jsonb := public._exchange_rate();
+  v_gold int;
+  v_silv int;
+begin
+  v_sid := public._session_student(p_token);
+  if v_sid is null then
+    return jsonb_build_object('ok', false, 'error', 'NO_SESSION');
+  end if;
+  if p_count is null or p_count < 1 or p_count > 100 then
+    return jsonb_build_object('ok', false, 'error', 'BAD_COUNT');
+  end if;
+  perform 1 from public.students where id = v_sid for update;
+
+  v_gold := p_count * (v_rate ->> 'gold')::int;
+  v_silv := p_count * (v_rate ->> 'silver')::int;
+  if public._coin_balance(v_sid) < v_gold then
+    return jsonb_build_object('ok', false, 'error', 'NO_COINS');
+  end if;
+
+  insert into public.point_events (student_id, xp, coins, silver, reason)
+  values (v_sid, 0, -v_gold, v_silv, '은화 바꾸기');
+
+  return jsonb_build_object('ok', true, 'coins', public._coin_balance(v_sid), 'silver', public._silver_balance(v_sid),
+                            'gold_spent', v_gold, 'silver_got', v_silv);
+end;
+$$;
+revoke all on function public.exchange_silver(text, int) from public;
+grant execute on function public.exchange_silver(text, int) to anon, authenticated;
+
+
+-- 학습지 수업 따라가기(2026-11-05): 수업자료가 마지막 쪽에 가면(또는 W) 수업 끝 → 모든 쪽을 열고 학생이 마음대로 넘김.
+-- 선생님이 아직 [제출 시작]을 안 했거나 잠근 쪽도 모두 연다(덜 쓴 쪽을 수업 뒤에 쓰고 내게)
+create or replace function public.set_ws_free(p_board_id uuid)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = public
+as $$
+declare
+  v_pages jsonb;
+begin
+  if not public.is_teacher() then
+    raise exception 'NOT_TEACHER';
+  end if;
+  update public.boards set ws_free = true, ws_upto = 9999 where id = p_board_id;
+  select w.pages into v_pages
+  from public.boards b join public.worksheets w on w.lesson_code = b.lesson_code
+  where b.id = p_board_id;
+  insert into public.ws_page_open (board_id, page, slide)
+  select p_board_id, (e.i - 1)::int, (e.p ->> 'slide')::int
+  from jsonb_array_elements(coalesce(v_pages, '[]'::jsonb)) with ordinality as e(p, i)
+  where jsonb_array_length(coalesce(e.p -> 'fields', '[]'::jsonb)) > 0
+  on conflict (board_id, page) do update set closed_at = null;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+revoke all on function public.set_ws_free(uuid) from public, anon;
+grant execute on function public.set_ws_free(uuid) to authenticated;

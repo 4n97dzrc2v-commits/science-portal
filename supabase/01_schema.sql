@@ -737,3 +737,13 @@ alter table public.students add column if not exists nickname_cost int not null 
 alter table public.avatar_items drop constraint if exists avatar_items_slot_check;
 alter table public.avatar_items add constraint avatar_items_slot_check
   check (slot in ('face', 'hair', 'hat', 'eyes', 'mouth', 'outfit', 'acc', 'pet', 'aura', 'bg'));
+
+-- 학습지 수업 따라가기 (2026-11-05): 학생 학습지가 수업 모드의 지금 쪽(ws_now)을 따라가고, 수업이 끝나면(ws_free) 마음대로 넘김.
+-- 쓸 칸이 없는 수업자료 쪽은 제목 카드로 보여 주려고 수업 모드가 쪽 제목을 차시에 적는다(slide_titles: ["표지", …])
+alter table public.boards add column if not exists ws_now int null;
+alter table public.boards add column if not exists ws_free boolean not null default false;
+alter table public.lessons add column if not exists slide_titles jsonb null;
+
+-- 학습지는 수업 날에만 (2026-11-06): 수업 모드가 이 보드를 연 날(KST). 그날이 아니면 학생 화면에 연 쪽이 없고 쓰거나 낼 수 없다
+alter table public.boards add column if not exists ws_day date null;
+update public.boards set ws_day = (watch_at at time zone 'Asia/Seoul')::date where ws_day is null and watch_at is not null;

@@ -7,7 +7,7 @@ import {
   getLesson, listClasses, listBoards, getBoard, setTodayBoard, sendClassRefresh,
   getBoardGroupMembers, listSubmissions, onSubmissionsChange, getWorksheetStats, setWorksheetUpto, resetWorksheetUpto,
   getWsFirst, acceptWsFirst, skipWsFirst, unskipWsFirst, onWsFirstsChange, openWsPage, closeWsPage, unacceptWsFirst, sendWsOpen, setQuizOpen, listQuizGames,
-  listPosts, teacherDeletePost, onPostsChange, cleanupPostPhotos, recordLessonTaught, setBoardSlideMax, setLessonSlideCount, updateBoard,
+  listPosts, teacherDeletePost, onPostsChange, cleanupPostPhotos, recordLessonTaught, setBoardSlideMax, setBoardSlideNow, setWsFree, setLessonSlideCount, updateBoard,
   onRemote, sendRemote, watchBoard, getAwayStats,
 } from '../db.js';
 import { boardHTML } from '../posts.js';
@@ -55,6 +55,7 @@ const lessonFrame = {
       // 같은 출처면 키를 capture 단계에서 먼저 받는다. 막히면 구석 버튼으로
       if (!this.hookKeys()) showCorner();
       if (!coverOpen) this.focus();
+      liveBar.sync();
     });
     $('lesson-slot').replaceChildren(f);
     this.el = f;
@@ -88,6 +89,16 @@ const lessonFrame = {
   slideCount() {
     try {
       return this.el.contentWindow.document.querySelectorAll('.slide').length || null;
+    } catch {
+      return null;
+    }
+  },
+
+  // 쪽 제목(.slide의 data-title). 학생 학습지에서 쓸 칸이 없는 쪽을 제목 카드로 보여 줄 때 쓴다
+  slideTitles() {
+    try {
+      return [...this.el.contentWindow.document.querySelectorAll('.slide')]
+        .map((s, i) => (s.dataset.title || s.querySelector('h1, h2')?.textContent || `${i + 1}쪽`).trim().slice(0, 80));
     } catch {
       return null;
     }
@@ -703,7 +714,53 @@ $('timer-minus').addEventListener('click', () => timer.step(-1));
 $('timer-plus').addEventListener('click', () => timer.step(1));
 
 /* =========================================================
-   학습지 띠: 오른쪽 아래 "학습지 완료 18 / 28" (5초마다). 학생 답·이름은 보이지 않는다
+   위 띠(#live-bar): 딴 화면 수 + 학습지 띠를 한 줄로.
+   같은 출처 수업자료에 떠 있는 위 메뉴(header.nav, 721 같은 스크롤형)가 있으면
+   그 메뉴를 화면 너비로 넓히고 오른쪽을 띠 너비만큼 비워, 띠를 그 자리에 겹쳐 한 줄처럼 보이게 한다.
+   메뉴가 없는 수업자료(넘기는 슬라이드)는 오른쪽 위에 떠 있는 알약
+   ========================================================= */
+const DOCK_CSS = `html.live-docked .nav{left:10px!important;transform:none!important;width:calc(100% - 20px)!important;box-sizing:border-box;padding-right:calc(var(--live-bar, 0px) + 8px)!important}
+@media (max-width:1500px){html.live-docked .nav .t span{display:none}}
+@media (max-width:1280px){html.live-docked .nav .ws{display:none}}
+html.live-docked .nav .links a{white-space:nowrap}
+@media (max-width:1100px){html.live-docked .nav .links{display:none}}`;
+const liveBar = {
+  sync() {
+    const bar = $('live-bar');
+    const show = !$('ws-band').classList.contains('hidden') || !$('away-chip').classList.contains('hidden');
+    bar.classList.toggle('hidden', !show);
+    let doc = null;
+    let nav = null;
+    try {
+      doc = lessonFrame.el?.contentDocument ?? null;
+      nav = doc?.querySelector('header.nav') ?? null;
+    } catch { doc = null; }
+    if (nav && !doc.getElementById('live-dock-css')) {
+      const st = doc.createElement('style');
+      st.id = 'live-dock-css';
+      st.textContent = DOCK_CSS;
+      doc.head.append(st);
+    }
+    const docked = !!(show && nav && doc.defaultView.getComputedStyle(nav).display !== 'none');
+    doc?.documentElement.classList.toggle('live-docked', docked);
+    bar.classList.toggle('is-docked', docked);
+    if (!docked) {
+      bar.style.top = bar.style.right = bar.style.height = '';
+      return;
+    }
+    doc.documentElement.style.setProperty('--live-bar', `${Math.ceil(bar.offsetWidth)}px`);
+    const f = lessonFrame.el.getBoundingClientRect();
+    const r = nav.getBoundingClientRect();
+    bar.style.top = `${f.top + r.top}px`;
+    bar.style.height = `${r.height}px`;
+    bar.style.right = `${Math.max(0, window.innerWidth - (f.left + r.right))}px`;
+  },
+};
+window.addEventListener('resize', () => liveBar.sync());
+setInterval(() => { if (!document.hidden) liveBar.sync(); }, 1000);
+
+/* =========================================================
+   학습지 띠: 위 띠 안 "학습지 완료 18 / 28" (5초마다). 학생 답·이름은 보이지 않는다
    이 차시에 학습지가 없으면 띄우지 않는다
    ========================================================= */
 const SHEET_POLL_MS = 5000;
@@ -732,7 +789,7 @@ const sheetBand = {
     const st = this.st;
     const band = $('ws-band');
     band.classList.toggle('hidden', !st?.has_sheet);
-    if (!st?.has_sheet) return;
+    if (!st?.has_sheet) { liveBar.sync(); return; }
     const upto = sheetUpto.sent >= ALL_PAGES ? '모두 열림' : sheetUpto.sent > 0 ? `${sheetUpto.sent}쪽까지` : '';
     const here = (st.pages ?? []).filter((p) => p.slide === this.slide);
     const opened = new Set(st.opened ?? []);
@@ -763,6 +820,7 @@ const sheetBand = {
     if (html !== this.html) band.innerHTML = this.html = html;
     band.classList.toggle('is-all', st.total > 0 && st.done >= st.total);
     band.classList.toggle('has-act', !!(start || view || back || undo));
+    liveBar.sync();
   },
 
   // [모둠 학습지 켬/끔]: 과학실처럼 모둠마다 기기 하나로 쓸 때 켠다. 학생 기기는 반 새로고침 신호로 바로 바뀜
@@ -1081,6 +1139,52 @@ $('wsf-back').addEventListener('click', () => wsFirst.back());
    학생은 그 쪽까지의 학습지만 보고 낸다. 앞 쪽으로 돌아가도 열린 쪽은 닫히지 않는다
    ========================================================= */
 const UPTO_POLL_MS = 1000;
+
+/* 학습지 수업 따라가기 (2026-11-05): 학생 학습지는 수업자료의 지금 쪽(boards.ws_now)으로 저절로 넘어가고,
+   학생이 앞뒤로 넘기지 못한다. 수업자료가 마지막 쪽에 가거나 W(모두 열기)를 누르면 수업 끝(set_ws_free):
+   모든 쪽이 열리고 학생이 마음대로 넘기며 덜 쓴 쪽을 쓴다. 같은 쪽에 0.6초 머물러야 보낸다(빨리 넘길 때 신호를 줄임) */
+const follow = {
+  sent: null,
+  want: null,
+  timer: 0,
+  ended: false,
+  start() { this.sent = board?.ws_now ?? null; this.ended = !!board?.ws_free; },
+  see(slide) {
+    if (!board || !slide || this.ended) return;
+    if (slide === this.want) return;
+    this.want = slide;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.send(slide), 600);
+    const n = lessonFrame.slideCount();
+    if (n && slide >= n) this.end();
+  },
+  async send(slide) {
+    if (!board || slide === this.sent || this.ended) return;
+    try {
+      await setBoardSlideNow(board.id, slide);
+      this.sent = slide;
+      sendClassRefresh(classId);
+    } catch (err) {
+      this.want = null;
+      console.warn('지금 쪽', err);
+    }
+  },
+  async end() {
+    if (!board || this.ended) return;
+    this.ended = true;
+    clearTimeout(this.timer);
+    try {
+      await setWsFree(board.id);
+      board.ws_free = true;
+      sendClassRefresh(classId);
+      sheetBand.refresh();
+      toast('수업 끝 · 학습지를 모두 열었어요');
+    } catch (err) {
+      this.ended = false;
+      console.warn('수업 끝', err);
+    }
+  },
+};
 const ALL_PAGES = 9999;
 const sheetUpto = {
   sent: 0,
@@ -1102,7 +1206,7 @@ const sheetUpto = {
   openAll() {
     if (!board) return;
     if (this.sent >= ALL_PAGES) { toast('학습지가 이미 모두 열려 있어요'); return; }
-    this.push(ALL_PAGES).then(() => { if (this.sent >= ALL_PAGES) toast('학습지를 모두 열었어요'); });
+    this.push(ALL_PAGES).then(() => { if (this.sent >= ALL_PAGES) { follow.end(); toast('학습지를 모두 열었어요'); } });
   },
   // 지금 보이는 쪽까지만 남기고 뒤 쪽은 다시 잠근다 (미리 넘겨 봤을 때)
   async rewind() {
@@ -1122,11 +1226,13 @@ const sheetUpto = {
     }
   },
   start() {
+    follow.start();
     this.sent = board?.ws_upto ?? 0;
     const tick = () => {
       const slide = lessonFrame.currentSlide();
       sheetBand.setSlide(slide);
       this.push(slide);
+      follow.see(slide);
     };
     tick();
     setInterval(tick, UPTO_POLL_MS);
@@ -1143,7 +1249,9 @@ const progressMark = {
       const n = lessonFrame.slideCount();
       if (n && !this.counted) {
         this.counted = true;
-        if (lesson?.slide_count !== n) setLessonSlideCount(code, n).catch((err) => console.warn('쪽 수', err));
+        const titles = lessonFrame.slideTitles();
+        const same = JSON.stringify(lesson?.slide_titles ?? null) === JSON.stringify(titles);
+        if (lesson?.slide_count !== n || (titles && !same)) setLessonSlideCount(code, n, titles).catch((err) => console.warn('쪽 수', err));
       }
       const slide = lessonFrame.currentSlide();
       if (board && slide > this.max) {
@@ -1182,6 +1290,7 @@ const away = {
     const chip = $('away-chip');
     chip.classList.toggle('hidden', !this.now);
     $('away-n').textContent = this.now;
+    liveBar.sync();
   },
 };
 

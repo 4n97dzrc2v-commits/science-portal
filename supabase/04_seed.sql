@@ -348,3 +348,7 @@ from (values
 -- 2026-11-03 첫 답 선착순 쪽: 712 14쪽(스무고개)은 추첨 없이 낸 순서대로
 insert into public.settings (key, value) values ('ws_first_fcfs', '{"712": [14]}'::jsonb)
 on conflict (key) do nothing;
+
+-- 금화 → 은화 바꾸기 (2026-11-05): 금화 10개 → 은화 12개
+insert into public.settings (key, value) values ('exchange', '{"gold": 10, "silver": 12}'::jsonb)
+on conflict (key) do nothing;

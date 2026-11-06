@@ -2,8 +2,9 @@
 // 로그인은 로그아웃할 때까지 유지된다(login.js). 코드 없이 수업(게시판)만 볼 수도 있다.
 // test.html은 같은 화면을 test반 하나로 쓴다(<main data-test>): 반 고르기·코드 없이 보기 없음
 import { CLASSES, TEST_CLASS, GRADE, clsName } from '../config.js';
-import { initUI, toast, prepareDraw } from '../ui.js';
+import { initUI, toast, prepareDraw, countUp } from '../ui.js';
 import { studentLogin, studentLogout, getMyPage, getClassMaterials, onClassRefresh } from '../db.js';
+import { setTop, refreshTop } from '../topbar.js';
 import { readLogin, saveLogin, clearLogin } from '../login.js';
 import { mountAvatar, react, bindReactions } from '../avatar.js';
 import { materialsHTML, bindVideos, closeVideos } from '../materials.js';
@@ -119,6 +120,7 @@ $('login-form').addEventListener('submit', async (e) => {
 
 /* ---------- 로그인 뒤 ---------- */
 async function showHome(login) {
+  refreshTop();
   $('v-login').classList.add('hidden');
   $('top-rank').classList.add('hidden');
   $('logout').classList.remove('hidden');
@@ -144,6 +146,17 @@ async function showHome(login) {
     $('go-me-sub').textContent = `레벨 ${me.level.level}`;
     $('go-shop-sub').textContent = `금화 ${me.coins} · 은화 ${me.silver ?? 0}`;
     $('go-rank-sub').textContent = me.month_rank ? `전체 ${me.month_rank}위` : '';
+    setTop({ coins: me.coins, silver: me.silver ?? 0, avatar: me.avatar });
+    const lv = me.level || {};
+    $('home-lv-n').textContent = `Lv.${lv.level ?? 1}`;
+    $('home-lv-xp').textContent = lv.next ? `${me.total_xp} / ${lv.next} XP` : `${me.total_xp} XP`;
+    const span = lv.next ? lv.next - (lv.floor ?? 0) : 0;
+    $('home-bar').style.transform = `scaleX(${span ? Math.min(1, Math.max(0, (me.total_xp - (lv.floor ?? 0)) / span)) : 1})`;
+    $('hs-rank').textContent = me.month_rank ?? '–';
+    countUp($('hs-coins'), me.coins);
+    countUp($('hs-silver'), me.silver ?? 0);
+    $('home-lv').classList.remove('hidden');
+    $('home-stats').classList.remove('hidden');
     try {
       if (me.month_rank) sessionStorage.setItem('me-mark', JSON.stringify({ c: me.class_id, r: me.month_rank, xp: me.month_xp }));
     } catch {}
@@ -208,6 +221,7 @@ $('logout').addEventListener('click', async () => {
   const login = readLogin();
   clearLogin();
   showLogin();
+  refreshTop();
   if (login) studentLogout(login.token).catch(() => {});
 });
 
